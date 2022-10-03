@@ -1,0 +1,38 @@
+	TITLE PiDP-10 TEST
+
+A==1
+B==2
+
+GO:	JRST .
+
+;Test the PROGRAM STOP light.
+PSTOP:	JRST 4,.
+
+;Test the USER MODE light.
+USER:	JRST 12,@[10000,,.+1]	;Go to user mode.
+	JRST .
+        JRST 4,.		;Go to monitor mode.
+
+;Test the PI ON light.
+PION:	CONO PI,[200]		;Turn on.
+	JRST .
+	CONO PI,[400]		;Turn off.
+	JRST .
+
+;Test the PROGRAM DATA and MI lights.
+PDATA:	DATAO PI,[123456,,123456]
+	JRST .
+
+;Test PI ACTIVE lights.
+PIACT:	MOVEI A,200
+PIACT1:	MOVEI B,2000(A)
+	CONO PI,(B)		;Turn on.
+	JRST .
+	MOVEI B,1000(A)
+	CONO PI,(B)		;Turn off.
+	JRST .
+	LSH A,-1
+	JUMPN A,PIACT2
+	JRST .
+
+END GO
