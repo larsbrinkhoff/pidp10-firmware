@@ -987,6 +987,7 @@ void restore_pi_hold() {
             sim_debug(DEBUG_IRQ, &cpu_dev, "restore irq %o %03o\n", lvl, PIH);
 #endif
             PIH &= ~lvl;
+            updatePIH(PIH);
 #if KS_ITS
             pi_act &= ~lvl;
 #endif
@@ -1008,6 +1009,7 @@ void set_pi_hold() {
      PIR &= ~(0200 >> pi);
      if (pi_enable)
         PIH |= (0200 >> pi);
+     updatePIH(PIH);
 }
 
 #if !KS
@@ -1022,6 +1024,7 @@ t_stat dev_pi(uint32 dev, uint64 *data) {
         res = *data;
         if (res & 010000) { /* Bit 23 */
            PIR = PIH = PIE = 0;
+           updatePIH(PIH);
            pi_enable = 0;
 #if MPX_DEV
            mpx_enable = 0;
@@ -4818,6 +4821,7 @@ if (MREVERSE(getSWITCH(4) & (1 << 7)))	// READ IN
     {
       char cmdBuffer[100];
       int i;
+      updateIR(0700040 | (PIDP_MP.ReadinDevice << 6));
       for (i = 0; sim_devices[i] != NULL; i++) {
 	DIB *dev = (DIB *)sim_devices[i]->ctxt;
 	if (dev != NULL && dev->dev_num == PIDP_MP.ReadinDevice) {
@@ -4901,7 +4905,6 @@ if (MREVERSE(getSWITCH(4) & (1 << 2)))	// XCT
 	      pi_enc++;
 	    }
 	  }
-	  updatePIP(0200 >> ((pi_enc > 7) ? 1 : pi_enc));
 	  updatePIE(PIE);
 	  updatePION(pi_enable);
 	  updateUSER(FLAGS & USER);
@@ -5325,9 +5328,6 @@ st_pi:
         pi_hold = 0;
         pi_ov = 0;
         AB = 040 | (pi_enc << 1) | maoff;
-// =PIDP10===========================================================
-	updatePIP(0200 >> ((pi_enc > 7) ? 1 : pi_enc));
-// =PIDP10===========================================================
         xct_flag = 0;
 #if KS
         AB |= eb_ptr;
@@ -11545,6 +11545,7 @@ skip_op:
                                  /* Set PI flags */
                                  if (AR & 010000) { /* Bit 23 */
                                     PIR = PIH = PIE = 0;
+                                    updatePIH(PIH);
                                     pi_enable = 0;
                                     parity_irq = 0;
                                  }
@@ -14141,12 +14142,15 @@ t_stat cpu_reset (DEVICE *dptr)
     updateUSER(0);
     updateIOB_PIR(0);
     updatePIR(0);
-    updatePIP(0);
+    updatePIH(0);
     updatePIE(0);
     updatePSTOP(0);
     updateMSTOP(0);
     updateUSER(0);
     nxm_flag = clk_flg = 0;
+#if KA | KI
+    adr_flag = 0;
+#endif
     PIR = PIH = PIE = pi_enable = parity_irq = 0;
     pi_pending = pi_enc = apr_irq = 0;
     ov_irq =fov_irq =clk_en =clk_irq = 0;

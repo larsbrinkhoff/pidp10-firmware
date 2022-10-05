@@ -6,7 +6,7 @@ void updateMI_PROG(int data);
 void updateMI_MEM(int data);
 void updateIOB_PIR(int data);
 void updatePIR(int data);
-void updatePIP(int data);
+void updatePIH(int data);
 void updatePIE(int data);
 void updateRUN(int data);
 void updatePOWER(int data);

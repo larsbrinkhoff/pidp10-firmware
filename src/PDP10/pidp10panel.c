@@ -608,7 +608,7 @@ void updatePIR(int data)
   gpio_ledstatus[5] = temp_ledstatus[5]^0x0ffff;
 }
 
-void updatePIP(int data)
+void updatePIH(int data)
 {
   // row 7, led 0-6
   data &= 0177;
