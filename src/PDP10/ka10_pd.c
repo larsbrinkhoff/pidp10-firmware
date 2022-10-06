@@ -26,7 +26,6 @@
 
    When used with a KL10, the clock was part of the KL-UDGE board
    which could also provide a 60 Hz interrupt and set console lights.
-   This is not needed on a KA10, so it's not implemented here.
 
 */
 
@@ -92,6 +91,11 @@ t_stat pd_devio(uint32 dev, uint64 *data)
     DEVICE *dptr = &pd_dev;
 
     switch(dev & 07) {
+#if KL
+    case DATAO:
+        updateMI(*data);
+        break;
+#endif
     case DATAI:
         if (dptr->flags & PD_OFF)
             *data = 0;
