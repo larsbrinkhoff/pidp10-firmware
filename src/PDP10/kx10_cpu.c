@@ -166,6 +166,9 @@ int     push_ovf;                             /* Push stack overflow */
 int     mem_prot;                             /* Memory protection flag */
 #endif
 int     nxm_flag;                             /* Non-existant memory flag */
+#if KA | KI
+int     adr_flag;                             /* Address break/stop flag(s) */
+#endif
 int     clk_flg;                              /* Clock flag */
 int     ov_irq;                               /* Trap overflow */
 int     fov_irq;                              /* Trap floating overflow */
@@ -494,6 +497,12 @@ REG cpu_reg[] = {
     { FLDATAD (MEMPROT, mem_prot, 0, "Memory protection flag") },
 #endif
     { FLDATAD (NXM, nxm_flag, 0, "Non-existing memory access") },
+#if KA
+    { FLDATAD (ADR, adr_flag, 0, "Address break") },
+#endif
+#if KI
+    { ORDATAD (ADR, adr_flag, 5, "Address stop flags") },
+#endif
     { FLDATAD (CLK, clk_flg, 0, "Clock interrupt") },
     { FLDATAD (OV, ov_irq, 0, "Overflow enable") },
 #if PDP6
@@ -1075,6 +1084,9 @@ t_stat dev_pi(uint32 dev, uint64 *data) {
 #if KI | KL
         res |= ((uint64)(PIR) << 18);
 #endif
+#if KI
+	res |= (nxm_flag << 14) | ((uint64)adr_flag << 31);
+#endif
 #if !KL
         res |= (parity_irq << 15);
 #endif
@@ -1545,7 +1557,7 @@ void check_apr_irq() {
      if (pi_enable && apr_irq) {
          int flg = 0;
          clr_interrupt(0);
-         flg |= inout_fail | nxm_flag;
+         flg |= inout_fail | nxm_flag | adr_flag;
          if (flg)
              set_interrupt(0, apr_irq);
      }
@@ -1696,7 +1708,7 @@ void check_apr_irq() {
          clr_interrupt(0);
          flg |= ((FLAGS & OVR) != 0) & ov_irq;
          flg |= ((FLAGS & FLTOVR) != 0) & fov_irq;
-         flg |= nxm_flag | mem_prot | push_ovf;
+         flg |= nxm_flag | adr_flag | mem_prot | push_ovf;
          if (flg)
              set_interrupt(0, apr_irq);
      }
@@ -1730,7 +1742,7 @@ t_stat dev_apr(uint32 dev, uint64 *data) {
         res |= (((FLAGS & FLTOVR) != 0) << 6) | (fov_irq << 7) ;
         res |= (clk_flg << 9) | (((uint64)clk_en) << 10) | (nxm_flag << 12);
         res |= (mem_prot << 13) | (((FLAGS & USERIO) != 0) << 15);
-        res |= (push_ovf << 16) | (maoff >> 1);
+        res |= (adr_flag << 14) | (push_ovf << 16) | (maoff >> 1);
         *data = res;
         sim_debug(DEBUG_CONI, &cpu_dev, "CONI APR %012llo\n", *data);
         break;
@@ -1769,6 +1781,8 @@ t_stat dev_apr(uint32 dev, uint64 *data) {
             nxm_flag = 0;
         if (res & 020000)
             mem_prot = 0;
+        if (res & 040000)
+            adr_flag = 0;
         if (res & 0200000) {
 #if MPX_DEV
             mpx_enable = 0;
