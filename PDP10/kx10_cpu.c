@@ -123,9 +123,21 @@ t_addr  AB;                                   /* Memory address buffer */
 t_addr  PC;                                   /* Program counter */
 uint32  IR;                                   /* Instruction register */
 uint64  MI;                                   /* Monitor lights */
+uint8   MI_flag;                              /* Program vs Memory flag */
 uint32  FLAGS;                                /* Flags */
 uint32  AC;                                   /* Operand accumulator */
 uint64  SW;                                   /* Switch register */
+uint8   RUN;                                  /* CPU is running */
+#if PIDP10
+uint8   sing_inst_sw;                         /* Execute single inst */
+uint8   examine_sw;                           /* Examine memory */
+uint8   deposit_sw;                           /* Deposit memory */
+uint8   xct_sw;                               /* Execute SW */
+uint8   stop_sw;                              /* Stop simulation */
+uint8   prog_stop;                            /* CPU issued halt instruction */
+uint8   IX;                                   /* Index register */
+uint8   IND;                                  /* Indirect flag */
+#endif
 #if PDP6 | KA | KI
 t_addr  AS;                                   /* Address switches */
 #endif
@@ -142,13 +154,9 @@ int     mem_prot;                             /* Memory protection flag */
 #endif
 int     nxm_flag;                             /* Non-existant memory flag */
 #if KA | KI
+int     nxm_stop;                             /* Stop if NXM set */
 int     adr_flag;                             /* Address break flag */
 int     adr_cond;                             /* Address condition swiches */
-#define ADR_IFETCH  020
-#define ADR_DFETCH  010
-#define ADR_WRITE   004
-#define ADR_STOP    002
-#define ADR_BREAK   001
 #endif
 int     clk_flg;                              /* Clock flag */
 int     ov_irq;                               /* Trap overflow */
@@ -159,6 +167,7 @@ int     ill_op;                               /* Illegal opcode */
 int     user_io;                              /* User IO flag */
 int     ex_uuo_sync;                          /* Execute a UUO op */
 #endif
+uint8   IOB_PI;                               /* Pending PIR request */
 uint8   PIR;                                  /* Current priority level */
 uint8   PIH;                                  /* Highest priority */
 uint8   PIE;                                  /* Priority enable mask */
@@ -301,6 +310,7 @@ int     maoff = 0;                            /* Offset for traps */
 uint16  dev_irq[128];                         /* Pending irq by device */
 t_stat  (*dev_tab[128])(uint32 dev, uint64 *data);
 t_addr  (*dev_irqv[128])(uint32 dev, t_addr addr);
+t_stat  cpu_detach(UNIT *uptr);
 t_stat  rtc_srv(UNIT * uptr);
 #if KS
 int32   rtc_tps = 500;
@@ -479,6 +489,7 @@ REG cpu_reg[] = {
 #endif
     { FLDATAD (NXM, nxm_flag, 0, "Non-existing memory access") },
 #if KA | KI
+    { FLDATAD (NXMSTOP, nxm_stop, 0, "Stop on non-existing memory") },
     { FLDATAD (ABRK, adr_flag, 0, "Address break") },
     { ORDATAD (ACOND, adr_cond, 5, "Address condition switches") },
 #endif
@@ -692,7 +703,7 @@ DEVICE cpu_dev = {
     "CPU", &cpu_unit[0], cpu_reg, cpu_mod,
     1+ITS+KL, 8, 22, 1, 8, 36,
     &cpu_ex, &cpu_dep, &cpu_reset,
-    NULL, NULL, NULL, NULL, DEV_DEBUG, 0, cpu_debug,
+    NULL, NULL, &cpu_detach, NULL, DEV_DEBUG, 0, cpu_debug,
     NULL, NULL, &cpu_help, NULL, NULL, &cpu_description
     };
 
@@ -862,6 +873,7 @@ void set_interrupt(int dev, int lvl) {
     if (lvl) {
        dev_irq[dev>>2] = 0200 >> lvl;
        pi_pending = 1;
+       IOB_PI |= 0200 >> lvl;
 #if DEBUG
        sim_debug(DEBUG_IRQ, &cpu_dev, "set irq %o %o %03o %03o %03o\n",
               dev & 0774, lvl, PIE, PIR, PIH);
@@ -928,6 +940,7 @@ int check_irq_level() {
     /* Scan all devices */
     for(i = lvl = 0; i < MAX_DEV; i++)
        lvl |= dev_irq[i];
+    IOB_PI = lvl;
     if (lvl == 0)
        pi_pending = 0;
     pi_req = (lvl & PIE) | PIR;
@@ -1100,6 +1113,7 @@ t_stat dev_pi(uint32 dev, uint64 *data) {
         }
 #else
         MI = *data;
+        MI_flag = 1;
 #ifdef PANDA_LIGHTS
         /* Set lights */
         ka10_lights_main (*data);
@@ -1522,6 +1536,10 @@ t_stat dev_pag(uint32 dev, uint64 *data) {
 void check_apr_irq() {
      if (pi_enable && apr_irq) {
          int flg = 0;
+         if (nxm_stop && nxm_flag) {
+             RUN = 0;
+             return;
+         }
          clr_interrupt(0);
          flg |= inout_fail | nxm_flag | adr_flag;
          if (flg)
@@ -1671,6 +1689,10 @@ t_stat dev_pag(uint32 dev, uint64 *data) {
 void check_apr_irq() {
      if (pi_enable && apr_irq) {
          int flg = 0;
+         if (nxm_stop && nxm_flag) {
+             RUN = 0;
+             return;
+         }
          clr_interrupt(0);
          flg |= ((FLAGS & OVR) != 0) & ov_irq;
          flg |= ((FLAGS & FLTOVR) != 0) & fov_irq;
@@ -4374,35 +4396,40 @@ int nlzero(uint64 w) {
 t_stat sim_instr (void)
 {
 t_stat reason;
-int     pi_rq;                   /* Interrupt request */
-int     pi_ov;                   /* Overflow during PI cycle */
-int     ind;                     /* Indirect bit */
-int     ix;                      /* Index register */
-int     f_load_pc;               /* Load AB from PC at start of instruction */
-int     f_inst_fetch;            /* Fetch new instruction */
-int     f_pc_inh;                /* Inhibit PC increment after instruction */
-int     nrf;                     /* Normalize flag */
-int     fxu_hold_set;            /* Negitive exponent */
-int     f;                       /* Temporary variables */
-int     flag1;
-int     flag3;
-int     instr_count = 0;         /* Number of instructions to execute */
-t_addr  IA;                      /* Initial address of first fetch */
+    int     pi_rq;                /* Interrupt request */
+    int     pi_ov;                /* Overflow during PI cycle */
+    int     ind;                  /* Indirect bit */
+    int     ix;                   /* Index register */
+    int     f_load_pc;            /* Load AB from PC at start of instruction */
+    int     f_inst_fetch;         /* Fetch new instruction */
+    int     f_pc_inh;             /* Inhibit PC increment after instruction */
+    int     nrf;                  /* Normalize flag */
+    int     fxu_hold_set;         /* Negitive exponent */
+    int     f;                    /* Temporary variables */
+    int     flag1;
+    int     flag3;
+    int     instr_count = 0;      /* Number of instructions to execute */
+    t_addr  IA;                   /* Initial address of first fetch */
 #if ITS | KL_ITS | KS_ITS
-char    one_p_arm = 0;           /* One proceed arm */
+    char    one_p_arm = 0;        /* One proceed arm */
 #endif
 
-if (sim_step != 0) {
-    instr_count = sim_step;
-    sim_cancel_step();
-}
+    if (sim_step != 0) {
+        instr_count = sim_step;
+        sim_cancel_step();
+    }
 
 #if KS
-reason = SCPE_OK;
+    reason = SCPE_OK;
 #else
-/* Build device table */
-if ((reason = build_dev_tab ()) != SCPE_OK)            /* build, chk dib_tab */
-    return reason;
+    /* Build device table */
+    if ((reason = build_dev_tab ()) != SCPE_OK)      /* build, chk dib_tab */
+        return reason;
+#endif
+
+   RUN = 1;    /* For PiDP, set run indicator */
+#if PIDP10
+   prog_stop = 0;  /* For PiDP, set on halt instruction */
 #endif
 
 /* Main instruction fetch/decode loop: check clock queue, intr, trap, bkpt */
@@ -4432,27 +4459,61 @@ if ((reason = build_dev_tab ()) != SCPE_OK)            /* build, chk dib_tab */
 #endif
    watch_stop = 0;
 
-   while ( reason == 0) {                                /* loop until ABORT */
-      AIO_CHECK_EVENT;                                   /* queue async events */
-      if (sim_interval <= 0) {                           /* check clock queue */
+   while ( reason == 0) {                               /* loop until ABORT */
+     AIO_CHECK_EVENT;                                   /* queue async events */
+     if (sim_interval <= 0) {                           /* check clock queue */
          if ((reason = sim_process_event()) != SCPE_OK) {/* error?  stop sim */
 #if ITS
              if (QITS)
                  load_quantum();
 #endif
+             RUN = 0;
              return reason;
          }
     }
 
     if (sim_brk_summ && f_load_pc && sim_brk_test(PC, SWMASK('E'))) {
          reason = STOP_IBKPT;
+         RUN = 0;
          break;
     }
 
     if (watch_stop) {
          reason = STOP_IBKPT;
+         RUN = 0;
          break;
     }
+
+#if PIDP10
+    if (examine_sw) {
+        AB = AS;
+        (void)Mem_read(1, 0, 0, 0);
+        examine_sw = 0;
+    }
+    if (deposit_sw) {
+        AB = AS;
+        MB = SW;
+        (void)Mem_write(1, 0);
+        deposit_sw = 0;
+    }
+    if (xct_sw) {    /* Handle Front panel xct switch */
+        modify = 0;
+        xct_flag = 0;
+        uuo_cycle = 1;
+        f_pc_inh = 1;
+        MB = SW;
+        instr_count = 1;
+        xct_sw = 0;
+        goto no_fetch;
+    }
+    if (stop_sw) {
+        RUN = 0;
+        stop_sw = 0;
+    }
+    if (sing_inst_sw) {  /* Handle Front panel single instruction */
+        instr_count = 1;
+    }
+#endif
 
 #if MAGIC_SWITCH
     if (!MAGIC) {
@@ -4460,6 +4521,10 @@ if ((reason = build_dev_tab ()) != SCPE_OK)            /* build, chk dib_tab */
          break;
     }
 #endif /* MAGIC_SWITCH */
+
+    if (!RUN) {
+         reason = SCPE_STOP;
+    }
 
     /* Normal instruction */
     if (f_load_pc) {
@@ -4575,6 +4640,10 @@ no_fetch:
         AR = MB;
         AB = MB & RMASK;
         ix = GET_XR(MB);
+#if PIDP10
+        IND = ind;
+        IX = ix;
+#endif
         if (ix) {
 #if KL | KS
              if (((xct_flag & 8) != 0 && !ptr_flg) ||
@@ -8558,6 +8627,10 @@ jrstf:
 #endif
                             goto muuo;
                        } else {
+#if PIDP10
+                            RUN = 0;
+                            prog_stop = 1;
+#endif
                             reason = STOP_HALT;
                        }
                        break;
@@ -8620,6 +8693,10 @@ jrstf:
 #endif
                       goto muuo;
                  } else {
+#if PIDP10
+                      RUN = 0;
+                      prog_stop = 1;
+#endif
                       reason = STOP_HALT;
                  }
               }
@@ -12193,6 +12270,7 @@ last:
         if (QITS)
             load_quantum();
 #endif
+	RUN = 0;
         return SCPE_STEP;
     }
 }
@@ -13500,12 +13578,19 @@ static const char *pdp10_clock_precalibrate_commands[] = {
     NULL};
 
 /* Reset routine */
-
+static int   initialized = 0;
 t_stat cpu_reset (DEVICE *dptr)
 {
     int     i;
+
+    if (!initialized) {
+        initialized = 1;
+#if PIDP10
+        pi_panel_start();
+#endif
+    }
     sim_debug(DEBUG_CONO, dptr, "CPU reset\n");
-    BYF5 = uuo_cycle = 0;
+    RUN = BYF5 = uuo_cycle = 0;
 #if KA | PDP6
     Pl = Ph = 01777;
     Rl = Rh = Pflag = 0;
@@ -13521,7 +13606,8 @@ t_stat cpu_reset (DEVICE *dptr)
     adr_flag = 0;
 #endif
     nxm_flag = clk_flg = 0;
-    PIR = PIH = PIE = pi_enable = parity_irq = 0;
+    MI_flag = 0;
+    IOB_PI = PIR = PIH = PIE = pi_enable = parity_irq = 0;
     pi_pending = pi_enc = apr_irq = 0;
     ov_irq =fov_irq =clk_en =clk_irq = 0;
     pi_restore = pi_hold = 0;
@@ -13654,6 +13740,14 @@ else {
     M[ea] = val & FMASK;
     }
 return SCPE_OK;
+}
+
+/* Called at close of simulator */
+t_stat cpu_detach (UNIT *uptr)
+{
+#if PIDP10
+	pi_panel_stop();
+#endif
 }
 
 /* Memory size change */

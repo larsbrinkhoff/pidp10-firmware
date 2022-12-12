@@ -208,6 +208,12 @@ extern DEBTAB crd_debug[];
 #define IOCTL    00000017000000LL
 #endif
 
+#define ADR_IFETCH  020 
+#define ADR_DFETCH  010 
+#define ADR_WRITE   004 
+#define ADR_STOP    002 
+#define ADR_BREAK   001 
+
 /* IRQ Flags in APR */
 #if KL
 #define SWP_DONE        0000020         /* Cache sweep done */
@@ -831,6 +837,11 @@ extern UNIT     auxcpu_unit[];
 //int slave_read (t_addr addr);
 //int slave_write (t_addr addr, uint64);
 //extern UNIT     slave_unit[];
+#endif
+
+#if PIDP10
+void pi_panel_start();
+void pi_panel_stop();
 #endif
 
 #endif
