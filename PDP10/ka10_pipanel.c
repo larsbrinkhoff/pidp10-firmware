@@ -915,7 +915,7 @@ void pi_panel_start(void)
     gpio_mux_thread_start();
     sim_vm_read = &vm_read;
     sim_vm_post = &vm_post;
-    rl_callback_handler_install("", (rl_vcpfunc_t*) &read_line_handler);
+    rl_callback_handler_install("", (VCPFunction*) &read_line_handler);
 }
 
 /*
